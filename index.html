@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>3D Magic FPS Duel - Multiplayer Fixed</title>
+  <title>3D Magic FPS Duel - Perfect Multiplayer Edition</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
     body { overflow: hidden; background: #0a0c10; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -325,7 +325,7 @@
 
     <div id="step-1" class="step-container">
       <div class="room-box">
-        <label>合言葉（ルームID）</label>
+        <label>合言葉（半角英数推奨）</label>
         <input type="text" id="room-input" value="arena888" maxlength="15">
         <div class="mode-btn-group">
           <button class="mode-btn host" id="btn-goto-host">🏠 合言葉で部屋を作る (ホスト)</button>
@@ -820,8 +820,6 @@
     const playerColors = [0xff4757, 0xe056fd, 0xf0932b, 0x6ab04c];
 
     function createRemotePlayer(peerId, name = "魔導士") {
-      if (remotePlayers[peerId]) return remotePlayers[peerId];
-
       const group = new THREE.Group();
       const cIdx = Object.keys(remotePlayers).length % playerColors.length;
       const col = playerColors[cIdx];
@@ -1256,7 +1254,7 @@
       setTimeout(() => { overlay.style.opacity = '0'; }, 160);
     }
 
-    // --- 7. 通信ネットワーク（安全サニタイズ＆即時スポーン同期） ---
+    // --- 7. 通信ネットワーク（STUNサーバー完備＆確実な接続ハンドシェイク） ---
     let myPeerId = "player";
     let isHost = false;
     let hostPeer = null;
@@ -1264,17 +1262,44 @@
     const hostConnections = {};
     let guestConn = null;
 
-    // 日本語や記号でも安全なPeerIDへハッシュ変換
-    function sanitizeRoomId(str) {
-      let hash = 0;
-      for (let i = 0; i < str.length; i++) {
-        hash = (hash << 5) - hash + str.charCodeAt(i);
-        hash |= 0;
+    // ★Google STUNサーバー設定（異なる回線・NAT環境でも一瞬で接続確立）
+    const PEER_CONFIG = {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478' }
+        ]
       }
-      return 'room_' + Math.abs(hash).toString(36);
+    };
+
+    function sanitizeRoomId(str) {
+      return encodeURIComponent(str.trim().toLowerCase()).replace(/%/g, 'x');
     }
 
-    function initNetwork(rawRoomId) {
+    function sendMyCurrentMove() {
+      if (isDead) return;
+      broadcastMsg({
+        type: 'move',
+        name: playerName,
+        x: playerPos.x, y: playerPos.y, z: playerPos.z,
+        rot: yaw,
+        isGuarding,
+        hasFullShield: fullShieldTimer > 0,
+        hasSuperMagic: superMagicTimer > 0,
+        hasUndying: autoHealTimer > 0,
+        isGrounded,
+        curseTimer: curseDebuffTimer,
+        isVulnerable,
+        stunTimer,
+        isInvisible: invisibilityTimer > 0,
+        isDead: false
+      });
+    }
+
+    function initNetwork(roomId) {
+      const cleanRoom = sanitizeRoomId(roomId) || "arena888";
+
       if (currentStage === 'training') {
         myPeerId = "solo_player";
         document.getElementById('info').innerText = '訓練場（ソロ練習モード）';
@@ -1282,17 +1307,15 @@
         return;
       }
 
-      const safeId = sanitizeRoomId(rawRoomId);
-
       if (isHost) {
-        const hostId = `arena4p-v4-${safeId}-host`;
-        hostPeer = new Peer(hostId);
+        const hostId = `arena4p-v5-${cleanRoom}-host`;
+        hostPeer = new Peer(hostId, PEER_CONFIG);
 
         hostPeer.on('open', (id) => {
           myPeerId = id;
-          document.getElementById('info').innerText = 'ホストとして待機中... (最大4人)';
+          document.getElementById('info').innerText = 'ホスト待機中 (合言葉を友達に共有)';
           buildStage(selectedStage);
-          addBattleLog(`部屋作成完了: [${rawRoomId}] ステージ: ${currentStage.toUpperCase()}`);
+          addBattleLog(`部屋作成完了: [${roomId}] ステージ: ${currentStage.toUpperCase()}`);
 
           hostPeer.on('connection', (conn) => {
             if (Object.keys(hostConnections).length >= 3) { conn.close(); return; }
@@ -1307,19 +1330,19 @@
           }
         });
       } else {
-        const hostId = `arena4p-v4-${safeId}-host`;
-        const randomGuestId = `arena4p-v4-${safeId}-g${Math.floor(Math.random() * 8999 + 1000)}`;
-        guestPeer = new Peer(randomGuestId);
+        const hostId = `arena4p-v5-${cleanRoom}-host`;
+        const randomGuestId = `arena4p-v5-${cleanRoom}-g${Math.floor(Math.random() * 89999 + 10000)}`;
+        guestPeer = new Peer(randomGuestId, PEER_CONFIG);
 
         guestPeer.on('open', (id) => {
           myPeerId = id;
           document.getElementById('info').innerText = 'ホストへ接続中...';
-          guestConn = guestPeer.connect(hostId);
+          guestConn = guestPeer.connect(hostId, { reliable: true });
           setupGuestConn(guestConn, hostId);
         });
 
         guestPeer.on('error', (err) => {
-          alert('ホストが見つかりませんでした。合言葉を確認するか、先にホストで部屋を作ってください。');
+          alert('ホストが見つかりませんでした。ホストが部屋を作った後に合言葉を正しく入力して入室してください。');
           leaveGame();
         });
       }
@@ -1328,23 +1351,17 @@
     function setupHostConn(conn) {
       conn.on('open', () => {
         hostConnections[conn.peer] = conn;
-        // 接続即座にゲスト用のリモートプレイヤーを生成
-        const rp = createRemotePlayer(conn.peer, "魔導士");
-        rp.hasPos = true;
-
-        // ホストの現在の位置・名前・ステージ情報を即時送信して相手画面に即時スポーン
-        conn.send({
-          type: 'init_sync',
-          stage: currentStage,
-          hostName: playerName,
-          hostX: playerPos.x, hostY: playerPos.y, hostZ: playerPos.z,
-          hostRot: yaw
-        });
+        // ホスト側で即座にゲストのアバターを作成
+        createRemotePlayer(conn.peer, "魔導士");
+        // ゲストへ初期設定とホストの情報を即座に送信
+        conn.send({ type: 'init_sync', stage: currentStage, hostName: playerName, hostId: myPeerId });
+        sendMyCurrentMove();
         broadcastLog(`新たな挑戦者が参戦しました！ (参加人数: ${Object.keys(hostConnections).length + 1}/4)`);
       });
 
       conn.on('data', (data) => {
         handleNetData(data, conn.peer);
+        // 他のゲストにも中継
         Object.entries(hostConnections).forEach(([pid, c]) => {
           if (pid !== conn.peer && c.open) c.send({ ...data, senderId: conn.peer });
         });
@@ -1360,13 +1377,10 @@
     function setupGuestConn(conn, hostId) {
       conn.on('open', () => {
         document.getElementById('info').innerText = '戦闘中';
-        // ゲストからも自分の初期位置と名前を即座に送る
-        conn.send({
-          type: 'handshake',
-          name: playerName,
-          x: playerPos.x, y: playerPos.y, z: playerPos.z,
-          rot: yaw
-        });
+        // ゲスト側から即座にハンドシェイクを送信
+        conn.send({ type: 'handshake', name: playerName });
+        sendMyCurrentMove();
+        addBattleLog(`<span style="color:#2ecc71">ホストとの接続が完了しました！</span>`);
       });
       conn.on('data', (data) => handleNetData(data, data.senderId || hostId));
       conn.on('close', () => { document.getElementById('info').innerText = 'ホストから切断されました'; });
@@ -1376,29 +1390,22 @@
       if (data.type === 'init_sync') {
         buildStage(data.stage);
         resetSpawn(true);
-        // ホストのアバターを即座に生成＆初期位置へ配置
-        const rp = createRemotePlayer(senderId, data.hostName || "ホスト");
-        if (data.hostX !== undefined) {
-          rp.group.position.set(data.hostX, data.hostY, data.hostZ);
-          rp.group.rotation.y = data.hostRot || 0;
-          rp.hasPos = true;
-          rp.group.visible = true;
+        // ホスト用アバターを即座に作成
+        if (!remotePlayers[data.hostId]) {
+          createRemotePlayer(data.hostId, data.hostName || "ホスト");
         }
-        addBattleLog(`ステージ同期完了: ${data.stage.toUpperCase()}`);
+        sendMyCurrentMove();
+        addBattleLog(`ステージ同期: ${data.stage.toUpperCase()}`);
       } else if (data.type === 'handshake') {
-        const rp = createRemotePlayer(senderId, data.name || "魔導士");
-        rp.name = data.name;
-        rp.headTag.userData.name = data.name;
-        if (data.x !== undefined) {
-          rp.group.position.set(data.x, data.y, data.z);
-          rp.group.rotation.y = data.rot || 0;
-          rp.hasPos = true;
-          rp.group.visible = true;
-        }
+        if (!remotePlayers[senderId]) createRemotePlayer(senderId, data.name);
+        remotePlayers[senderId].name = data.name;
+        remotePlayers[senderId].headTag.userData.name = data.name;
+        sendMyCurrentMove();
       } else if (data.type === 'battle_log') {
         addBattleLog(data.text, data.logType);
       } else if (data.type === 'move') {
-        const rp = createRemotePlayer(senderId, data.name || "魔導士");
+        if (!remotePlayers[senderId]) createRemotePlayer(senderId, data.name || "魔導士");
+        const rp = remotePlayers[senderId];
         rp.group.position.set(data.x, data.y, data.z);
         rp.group.rotation.y = data.rot;
         rp.shield.visible = data.isGuarding;
@@ -1410,7 +1417,7 @@
         rp.isInvisible = !!data.isInvisible;
         rp.isDead = !!data.isDead;
         rp.hasPos = true;
-        rp.group.visible = !rp.isDead && !rp.isInvisible;
+        rp.group.visible = !rp.isDead && !rp.isInvisible; // ★生存中かつ非透明なら確実に表示！
 
         const debuffs = [];
         const buffs = [];
@@ -2496,27 +2503,12 @@
       if (isVulnerable) buffList.push(`<span style="color:#e74c3c">弱体化(1.5倍)</span>`);
       document.getElementById('active-buff').innerHTML = buffList.join(' | ');
 
-      // ★重要修正：クリック（ポインターロック）前でも現在位置を相手に常時送信！
+      // ★位置同期の完全独立送信（ポインターロックの有無に関係なく毎秒30回確実に送信！）
       if (isGameStarted && !isDead) {
         networkTimer += delta;
         if (networkTimer >= 0.033) {
           networkTimer = 0;
-          broadcastMsg({
-            type: 'move',
-            name: playerName,
-            x: playerPos.x, y: playerPos.y, z: playerPos.z,
-            rot: yaw,
-            isGuarding,
-            hasFullShield: fullShieldTimer > 0,
-            hasSuperMagic: superMagicTimer > 0,
-            hasUndying: autoHealTimer > 0,
-            isGrounded,
-            curseTimer: curseDebuffTimer,
-            isVulnerable,
-            stunTimer,
-            isInvisible: invisibilityTimer > 0,
-            isDead: false
-          });
+          sendMyCurrentMove();
           if (beamFiring) {
             const chestPos = new THREE.Vector3(playerPos.x, playerPos.y + 1.2, playerPos.z);
             const bQuat = myBeam.quaternion;
@@ -2718,6 +2710,7 @@
           addBattleLog(dummyAttackSwitch ? `反撃マネキン: 攻撃スイッチ【ON】` : `反撃マネキン: 攻撃スイッチ【OFF】`);
         }
 
+        // 訓練場マネキン着弾
         if (currentStage === 'training' && s.isMine) {
           dummies.forEach(d => {
             const dCenter = d.mesh.position.clone().add(new THREE.Vector3(0, 0.9, 0));
@@ -2746,6 +2739,7 @@
           });
         }
 
+        // 被弾判定
         if (!s.isMine && myHp > 0 && !isDead) {
           const myCenter = new THREE.Vector3(playerPos.x, playerPos.y + 0.9, playerPos.z);
           if (s.group.position.distanceTo(myCenter) < 1.35 * s.scale) {
