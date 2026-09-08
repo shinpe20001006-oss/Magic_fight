@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>3D Magic FPS Duel - Mega Beam & Survival Update</title>
+  <title>3D Magic FPS Duel</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
     body { overflow: hidden; background: #0a0c10; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -403,7 +403,7 @@
         <div class="char-card" data-ult="highjump">
           <div class="name">⑧ ハイジャンプ <span class="cost">短縮20s</span></div>
           <div class="desc">超跳躍＋吹飛！落下中Eで急降下(10ダメ)。</div>
-          <div class="ex-desc">【EX】急降下の判定拡大(6m)＆相手を0.5秒硬直！</div>
+          <div class="ex-desc">【EX】跳躍時に周囲敵を1.5秒硬直！急降下範囲6m！</div>
         </div>
         <div class="char-card" data-ult="thunder">
           <div class="name">⑨ ハイパーサンダー <span class="cost">25%</span></div>
@@ -440,11 +440,8 @@
     sunLight.castShadow = true;
     scene.add(sunLight);
 
-    // ★GC対策：共通一時ベクトル
     const _tmpVecA = new THREE.Vector3();
     const _tmpVecB = new THREE.Vector3();
-
-    // ★軽量化：パーティクル用ジオメトリを1つだけ作成して全破片で共有！
     const sharedParticleGeo = new THREE.SphereGeometry(0.14, 5, 5);
 
     // --- 2. ステージ管理 ---
@@ -852,7 +849,7 @@
 
       remotePlayers[peerId] = {
         group, shield, fullShield, beam, name, headTag, hasPos: false, color: col,
-        isGrounded: true, curseDebuffTimer: 0, isVulnerable: false, isInvisible: false, bodyMesh: body
+        isGrounded: true, curseDebuffTimer: 0, isVulnerable: false, isInvisible: false, isDead: false, bodyMesh: body
       };
       return remotePlayers[peerId];
     }
@@ -884,7 +881,6 @@
       corpses.push({ group: corpseGroup, time: 0, mat: greyMat });
     }
 
-    // ★メガビーム大幅上方修正：通常半径 2.5m / EX半径 5.0m
     function createVisualBeam(colorHex, isEx = false) {
       const group = new THREE.Group();
       const outerR = isEx ? 5.0 : 2.5;
@@ -969,14 +965,14 @@
     let playerName = "魔導士A";
     let selectedUltType = "beam";
     const ultConfig = {
-      beam:     { name: "メガビーム", baseHitCharge: 20.0 }, // ★通常弾1発で20%
+      beam:     { name: "メガビーム", baseHitCharge: 20.0 },
       shield:   { name: "フルシールド", baseHitCharge: 25.0 },
       curse:    { name: "カースショック", baseHitCharge: 20.0 },
       super:    { name: "スーパーマジック", baseHitCharge: 20.0 },
       warp:     { name: "クイックワープ", baseHitCharge: 33.4 },
       heal:     { name: "オートヒール", baseHitCharge: 20.0 },
       upgrade:  { name: "グレードアップ", baseHitCharge: 20.0 },
-      highjump: { name: "ハイジャンプ", baseHitCharge: 33.4 }, // ★通常弾1発で20秒短縮(約33.4%相当)
+      highjump: { name: "ハイジャンプ", baseHitCharge: 33.4 },
       thunder:  { name: "ハイパーサンダー", baseHitCharge: 25.0 }
     };
 
@@ -1059,6 +1055,7 @@
       const s = safeSpawns[Math.floor(Math.random() * safeSpawns.length)] || { x: 0, z: 0 };
       playerPos.set(s.x, 2.5, s.z);
       camera.position.set(s.x, 2.5 + eyeHeight, s.z);
+      pitch = 0;
       velocityY = 0;
       playerKnockbackVel.set(0, 0, 0);
       myHp = 100;
@@ -1199,7 +1196,6 @@
       setTimeout(() => flash.style.opacity = '0', 300);
     }
 
-    // ★軽量化爆発：共有ジオメトリを使用
     function createExplosion(pos, colorHex = 0x00f2fe, isRainbow = false) {
       const isCave = (currentStage === 'cave');
       const pLight = new THREE.PointLight(isRainbow ? 0xff007f : colorHex, isCave ? 4.5 : 3.0, isCave ? 10 : 6);
@@ -1218,9 +1214,7 @@
       }
     }
 
-    // ★負荷軽減：1人のプレイヤーが一度に出せる弾は最大10発まで（FIFO制限）
     function spawnSpell(x, y, z, vx, vy, vz, shooterId, colorHex = 0x0984e3, scale = 1.0, isHoming = false, isExSuperHoming = false) {
-      // 該当シューターの弾数をチェック
       let count = 0;
       let oldestIdx = -1;
       for (let i = 0; i < spells.length; i++) {
@@ -1230,9 +1224,9 @@
         }
       }
 
-      // 10発以上あれば最古の1発を即時消滅
       if (count >= 10 && oldestIdx !== -1) {
-        scene.remove(spells[oldestIdx].group);
+        const oldGroup = spells[oldestIdx].group;
+        scene.remove(oldGroup);
         spells.splice(oldestIdx, 1);
       }
 
@@ -1264,6 +1258,7 @@
     let myPeerId = "player";
     let isHost = false;
     let hostPeer = null;
+    let guestPeer = null;
     const hostConnections = {};
     let guestConn = null;
 
@@ -1300,13 +1295,13 @@
       } else {
         const hostId = `arena4p-v4-${roomId}-host`;
         const randomGuestId = `arena4p-v4-${roomId}-g${Math.floor(Math.random() * 8999 + 1000)}`;
-        const guestPeer = new Peer(randomGuestId);
+        guestPeer = new Peer(randomGuestId);
 
         guestPeer.on('open', (id) => {
           myPeerId = id;
           document.getElementById('info').innerText = 'ホストへ接続中...';
           guestConn = guestPeer.connect(hostId);
-          setupGuestConn(guestConn);
+          setupGuestConn(guestConn, hostId);
         });
 
         guestPeer.on('error', (err) => {
@@ -1338,12 +1333,12 @@
       });
     }
 
-    function setupGuestConn(conn) {
+    function setupGuestConn(conn, hostId) {
       conn.on('open', () => {
         document.getElementById('info').innerText = '戦闘中';
         conn.send({ type: 'handshake', name: playerName });
       });
-      conn.on('data', (data) => handleNetData(data, data.senderId || 'host'));
+      conn.on('data', (data) => handleNetData(data, data.senderId || hostId));
       conn.on('close', () => { document.getElementById('info').innerText = 'ホストから切断されました'; });
     }
 
@@ -1370,8 +1365,9 @@
         rp.isVulnerable = !!data.isVulnerable;
         rp.stunTimer = data.stunTimer || 0;
         rp.isInvisible = !!data.isInvisible;
+        rp.isDead = !!data.isDead; // ★死亡状態を同期
         rp.hasPos = true;
-        rp.group.visible = !data.isDead && !rp.isInvisible;
+        rp.group.visible = !rp.isDead && !rp.isInvisible; // ★死亡時は再表示させない
 
         const debuffs = [];
         const buffs = [];
@@ -1386,25 +1382,33 @@
       } else if (data.type === 'shoot') {
         const rp = remotePlayers[senderId];
         const col = rp ? rp.color : 0xff4757;
-        spawnSpell(data.x, data.y, data.z, data.vx, data.vy, data.vz, senderId, col, data.scale || 1.0, !!data.isHoming, !!data.isExSuperHoming);
+        const actualShooterId = data.shooterId || senderId;
+        spawnSpell(data.x, data.y, data.z, data.vx, data.vy, data.vz, actualShooterId, col, data.scale || 1.0, !!data.isHoming, !!data.isExSuperHoming);
       } else if (data.type === 'hit_confirmed') {
-        let chargeAmt = ultConfig[selectedUltType].baseHitCharge;
-        if (data.isCurseTarget) chargeAmt *= 0.5;
-        addUltCharge(chargeAmt, false);
+        if (data.targetShooterId === myPeerId || data.targetShooterId === 'player') {
+          let chargeAmt = ultConfig[selectedUltType].baseHitCharge;
+          if (data.isCurseTarget) chargeAmt *= 0.5;
+          addUltCharge(chargeAmt, false);
+        }
       } else if (data.type === 'player_died') {
         spawnCorpse(new THREE.Vector3(data.x, data.y, data.z), data.rot);
-        if (remotePlayers[senderId]) remotePlayers[senderId].group.visible = false;
-        if (data.killerId === myPeerId) {
+        if (remotePlayers[senderId]) {
+          remotePlayers[senderId].group.visible = false;
+          remotePlayers[senderId].isDead = true; // ★死亡フラグを保持
+        }
+        if (data.killerId === myPeerId || data.killerId === 'player') {
           myHp = Math.min(100, myHp + 30);
           updateHudBars();
           addBattleLog(`<span style="color:#2ecc71">★ 敵撃破ボーナス: HP+30 回復！</span>`);
         }
       } else if (data.type === 'ult_curse_hit') {
+        // ★修正：対象外プレイヤーには適用しない
+        if (data.targetId !== myPeerId) return;
         if (respawnInvincibleTimer > 0) return;
         superMagicTimer = 0;
         myMp = 0;
         triggerOverheat();
-        curseDebuffTimer = 6.0; // ★6秒に下方修正
+        curseDebuffTimer = 6.0;
         if (data.isEx) {
           const lostHp = myHp * 0.33;
           applyDamage(lostHp, senderId, true);
@@ -1435,30 +1439,34 @@
           if (isVulnerable) { dmg *= 1.5; isVulnerable = false; }
           applyDamage(dmg, senderId);
           triggerHitEffect();
-          updateHudBars();
         }
       } else if (data.type === 'slam_knockback') {
-        const pushVec = new THREE.Vector3(playerPos.x - data.x, 0, playerPos.z - data.z).normalize();
-        if (pushVec.lengthSq() === 0) pushVec.set(0, 0, 1);
-        playerKnockbackVel.addScaledVector(pushVec, 15.0);
-        velocityY = Math.max(velocityY, 4.5);
+        // ★修正：発動者自身や死亡者には適用しない
+        if (senderId === myPeerId || isDead) return;
+        const dist = Math.hypot(playerPos.x - data.x, playerPos.z - data.z);
+        if (dist <= 4.5 && respawnInvincibleTimer <= 0) {
+          const pushVec = new THREE.Vector3(playerPos.x - data.x, 0, playerPos.z - data.z).normalize();
+          if (pushVec.lengthSq() === 0) pushVec.set(0, 0, 1);
+          playerKnockbackVel.addScaledVector(pushVec, 16.0);
+          velocityY = Math.max(velocityY, 4.5);
+          if (data.isEx) {
+            stunTimer = 1.5;
+            addBattleLog(`<span style="color:#fd79a8">EXハイジャンプの衝撃波で吹き飛び＆1.5秒硬直！</span>`);
+          }
+        }
       } else if (data.type === 'slam_damage') {
+        // ★修正：対象外プレイヤーには適用しない
+        if (data.targetId !== myPeerId) return;
         if (respawnInvincibleTimer <= 0 && myHp > 0 && !isDead) {
           let dmg = 10;
           if (isVulnerable) { dmg *= 1.5; isVulnerable = false; }
           applyDamage(dmg, senderId);
-          if (data.isEx) {
-            stunTimer = 0.5;
-            addBattleLog(`<span style="color:#fd79a8">EX急降下に被弾！0.5秒スタン硬直！</span>`);
-          }
           triggerHitEffect();
-          updateHudBars();
         }
       } else if (data.type === 'reflect_damage') {
         if (data.targetId === myPeerId && myHp > 0 && !isDead && respawnInvincibleTimer <= 0) {
           applyDamage(data.dmg, senderId, false, true);
           triggerHitEffect();
-          updateHudBars();
           addBattleLog(`<span style="color:#fd79a8">💥 EXフルシールドの反射ダメージ(${Math.round(data.dmg)})を受けた！</span>`);
         }
       } else if (data.type === 'ult_thunder_strike') {
@@ -1491,20 +1499,18 @@
             }
           }
           triggerHitEffect();
-          updateHudBars();
         }
       }
     }
 
-    // ★オートヒール中のHP1耐え（不死身）判定付きダメージ処理
     function applyDamage(amount, attackerId, isCrit = false, isReflect = false) {
       if (myHp <= 0 || isDead || respawnInvincibleTimer > 0) return;
 
       if (autoHealTimer > 0) {
-        // オートヒール発動中の5秒間は、致命傷を受けてもHP1で必ず耐える！
         if (myHp - amount <= 0) {
           myHp = 1;
           spawnDamagePopup(playerPos, amount, isCrit, isReflect);
+          updateHudBars();
           addBattleLog(`<span style="color:#ff4757">★ オートヒール不死身発動！HP1で耐えた！</span>`);
           return;
         }
@@ -1516,6 +1522,7 @@
         myHp = 0;
         handlePlayerDeath(attackerId);
       }
+      updateHudBars();
     }
 
     function triggerThunderFlash() {
@@ -1566,6 +1573,7 @@
       clearInputs();
 
       if (hostPeer) { hostPeer.destroy(); hostPeer = null; }
+      if (guestPeer) { guestPeer.destroy(); guestPeer = null; }
       if (guestConn) { guestConn.close(); guestConn = null; }
       clearAllRemotePlayers();
       clearDummies();
@@ -1574,6 +1582,7 @@
       beamFiring = false;
       myBeam.visible = false;
       myAvatar.visible = false;
+      camera.position.set(playerPos.x, playerPos.y + eyeHeight, playerPos.z);
 
       document.getElementById('step-1').style.display = 'flex';
       document.getElementById('step-2').style.display = 'none';
@@ -1735,7 +1744,7 @@
       }
 
       spawnSpell(sx, sy, sz, vx, vy, vz, myPeerId, 0x0984e3, spellScale, isHoming, isExSuperHoming);
-      broadcastMsg({ type: 'shoot', x: sx, y: sy, z: sz, vx, vy, vz, scale: spellScale, isHoming, isExSuperHoming });
+      broadcastMsg({ type: 'shoot', shooterId: myPeerId, x: sx, y: sy, z: sz, vx, vy, vz, scale: spellScale, isHoming, isExSuperHoming });
     }
 
     function triggerOverheat() {
@@ -1758,8 +1767,10 @@
       myAvatar.visible = false;
       myBeam.visible = false;
       chargeBall.visible = false;
+      if (beamFiring) broadcastMsg({ type: 'ult_beam_end' }); // ★ビーム残存バグ防止
       beamCharging = false;
       beamFiring = false;
+      camera.position.set(playerPos.x, playerPos.y + eyeHeight, playerPos.z);
 
       spawnCorpse(playerPos, yaw);
 
@@ -1791,6 +1802,13 @@
       if (ultPercent < 100.0) return;
 
       const isEx = (ultPercent >= 200.0);
+
+      // ★修正：クイックワープの場合、対象がいるか確認してからゲージを消費する！
+      if (selectedUltType === 'warp') {
+        const success = executeWarp(isEx);
+        if (!success) return; // 対象がいなければゲージを消費せずに中断
+      }
+
       if (isEx) {
         ultPercent = 0;
       } else {
@@ -1806,9 +1824,7 @@
         broadcastLog(`<span style="color:#00cec9">${playerName}</span> が <span style="color:#f1c40f">${ultName}</span> を発動！`, 'ult');
       }
 
-      if (selectedUltType === 'warp') {
-        executeWarp(isEx);
-      } else if (selectedUltType === 'beam') {
+      if (selectedUltType === 'beam') {
         isExBeamFiring = isEx;
         beamCharging = true; beamTimer = 1.0; chargeBall.visible = true;
         scene.remove(myBeam);
@@ -1860,15 +1876,16 @@
         isExSlam = isEx;
         createExplosion(playerPos, isEx ? 0xff007f : 0xfdcb6e, isEx);
 
-        broadcastMsg({ type: 'slam_knockback', x: playerPos.x, z: playerPos.z });
+        broadcastMsg({ type: 'slam_knockback', x: playerPos.x, z: playerPos.z, isEx });
         if (currentStage === 'training') {
           dummies.forEach(d => {
-            if (playerPos.distanceTo(d.mesh.position) <= 3.8) {
+            if (playerPos.distanceTo(d.mesh.position) <= 4.5) {
               const push = new THREE.Vector3(d.mesh.position.x - playerPos.x, 0, d.mesh.position.z - playerPos.z).normalize();
               if (push.lengthSq() === 0) push.set(0, 0, 1);
-              d.knockbackVel.addScaledVector(push, 15.0);
+              d.knockbackVel.addScaledVector(push, 16.0);
               d.velY = Math.max(d.velY, 4.5);
               d.isGrounded = false;
+              if (isEx) d.stunTimer = 1.5;
             }
           });
         }
@@ -1883,7 +1900,10 @@
       const camDir = new THREE.Vector3();
       camera.getWorldDirection(camDir);
 
-      const candidates = (currentStage === 'training') ? dummies.map(d => ({ group: d.mesh, hasPos: true })) : Object.values(remotePlayers);
+      // ★修正：透明、死亡、未同期プレイヤーを除外
+      const candidates = (currentStage === 'training')
+        ? dummies.map(d => ({ group: d.mesh, hasPos: true }))
+        : Object.values(remotePlayers).filter(rp => rp.group.visible && rp.hasPos && !rp.isInvisible && !rp.isDead);
 
       candidates.forEach(rp => {
         if (!rp.group.visible || !rp.hasPos) return;
@@ -1914,14 +1934,14 @@
 
       if (!targetEnemy) {
         document.getElementById('info').innerText = '遮るもののない視界内に敵がいません！';
-        return;
+        return false; // ★対象がいない時は false を返してゲージ消費を防ぐ
       }
 
       const enemyRotY = targetEnemy.group.rotation.y;
       const enemyForward = new THREE.Vector3(-Math.sin(enemyRotY), 0, -Math.cos(enemyRotY)).normalize();
       const enemyBackDir = enemyForward.clone().negate();
 
-      let warpDist = 2.0;
+      let warpDist = 1.8;
       const enemyPosCenter = targetEnemy.group.position.clone().add(new THREE.Vector3(0, 0.8, 0));
       const backRay = new THREE.Raycaster(enemyPosCenter, enemyBackDir, 0.1, 2.2);
       const backHits = backRay.intersectObjects(obstacleMeshes);
@@ -1932,8 +1952,10 @@
       const targetPos = targetEnemy.group.position.clone().addScaledVector(enemyBackDir, warpDist);
 
       playerPos.set(targetPos.x, targetEnemy.group.position.y, targetPos.z);
+      camera.position.set(playerPos.x, playerPos.y + eyeHeight, playerPos.z);
       yaw = enemyRotY;
       pitch = 0;
+      velocityY = 0;
       warpExpireTimer = 0;
 
       if (isEx) {
@@ -1948,6 +1970,7 @@
       }
 
       createExplosion(playerPos, isEx ? 0xff007f : 0x00cec9, isEx);
+      return true; // 成功
     }
 
     function executeHighJumpSlam() {
@@ -1956,7 +1979,6 @@
       velocityY = -45;
     }
 
-    // ★EX急降下スラムの判定範囲を 6.0m に大幅拡大！
     function handleSlamImpact() {
       isSlamming = false;
       createExplosion(playerPos, isExSlam ? 0xff007f : 0xe17055, isExSlam);
@@ -1970,14 +1992,13 @@
           if (playerPos.distanceTo(d.mesh.position) <= slamRadius) {
             d.hp -= 10;
             hitSomeone = true;
-            if (isExSlam) d.stunTimer = 0.5;
             spawnDamagePopup(d.mesh.position, 10);
             createExplosion(d.mesh.position, 0xff7675);
           }
         });
       } else {
         Object.entries(remotePlayers).forEach(([pid, rp]) => {
-          if (rp.group.visible && rp.hasPos && playerPos.distanceTo(rp.group.position) <= slamRadius) {
+          if (rp.group.visible && rp.hasPos && !rp.isDead && playerPos.distanceTo(rp.group.position) <= slamRadius) {
             hitSomeone = true;
             broadcastMsg({ type: 'slam_damage', targetId: pid, isEx: isExSlam });
           }
@@ -2033,7 +2054,7 @@
         });
       } else {
         Object.values(remotePlayers).forEach(rp => {
-          if (!rp.group.visible || !rp.hasPos) return;
+          if (!rp.group.visible || !rp.hasPos || rp.isDead) return;
           if (isEx || !rp.isGrounded) hitAirCount++;
           else hitGroundCount++;
         });
@@ -2051,7 +2072,7 @@
       if (currentStage === 'training') {
         dummies.forEach(d => {
           if (centerPos.distanceTo(d.mesh.position) <= 15.0) {
-            d.curseDebuffTimer = 6.0; // ★6秒に短縮
+            d.curseDebuffTimer = 6.0;
             if (isEx) {
               const lostHp = d.hp * 0.33;
               d.hp = Math.max(1, d.hp - lostHp);
@@ -2062,7 +2083,7 @@
         });
       } else {
         Object.entries(remotePlayers).forEach(([pid, rp]) => {
-          if (!rp.group.visible || !rp.hasPos) return;
+          if (!rp.group.visible || !rp.hasPos || rp.isDead) return;
           const ePos = rp.group.position.clone().add(new THREE.Vector3(0, 0.9, 0));
           if (centerPos.distanceTo(ePos) <= 15.0) broadcastMsg({ type: 'ult_curse_hit', targetId: pid, isEx });
         });
@@ -2086,7 +2107,6 @@
       expand();
     }
 
-    // ★メガビーム当たり判定拡大（通常判定半径 3.0m / EX判定半径 5.5m）
     function checkBeamDamage(delta, beamOrigin, beamDir, isEx = false) {
       beamDamageTick += delta;
       if (beamDamageTick < 0.2) return;
@@ -2095,7 +2115,9 @@
       const raycaster = new THREE.Raycaster(beamOrigin, beamDir, 0.1, 65);
       const hits = raycaster.intersectObjects(obstacleMeshes);
 
-      const targets = (currentStage === 'training') ? dummies.map(d => ({ mesh: d.mesh, dummyRef: d })) : Object.entries(remotePlayers).map(([pid, rp]) => ({ mesh: rp.group, peerId: pid, rpRef: rp }));
+      const targets = (currentStage === 'training')
+        ? dummies.map(d => ({ mesh: d.mesh, dummyRef: d }))
+        : Object.entries(remotePlayers).filter(([_, rp]) => rp.group.visible && rp.hasPos && !rp.isDead).map(([pid, rp]) => ({ mesh: rp.group, peerId: pid, rpRef: rp }));
 
       targets.forEach(t => {
         const enemyCenter = t.mesh.position.clone().add(new THREE.Vector3(0, 0.9, 0));
@@ -2104,7 +2126,7 @@
 
         if (projDist > 0 && projDist < 65) {
           const closestPoint = beamOrigin.clone().addScaledVector(beamDir, projDist);
-          const hitRadius = isEx ? 5.5 : 3.0; // ★ビーム当たり判定拡大
+          const hitRadius = isEx ? 5.5 : 3.0;
           if (enemyCenter.distanceTo(closestPoint) < hitRadius) {
             let obstacleInFront = false;
             for (let hit of hits) {
@@ -2167,7 +2189,7 @@
         });
       } else {
         Object.values(remotePlayers).forEach(rp => {
-          if (rp.group.visible && rp.hasPos && !rp.isInvisible) {
+          if (rp.group.visible && rp.hasPos && !rp.isInvisible && !rp.isDead) {
             mapCtx.fillStyle = '#ff4757';
             mapCtx.beginPath();
             mapCtx.arc((rp.group.position.x + halfSize) * mapScale, (rp.group.position.z + halfSize) * mapScale, 3.5, 0, Math.PI * 2);
@@ -2276,7 +2298,6 @@
         crossStatusContainer.innerHTML += `<div class="status-pill pill-super">✨ スーパーマジック (MP無限)</div>`;
       }
       if (autoHealTimer > 0) {
-        // ★HP1耐えのバッジ表示
         crossStatusContainer.innerHTML += `<div class="status-pill pill-undying">❤️‍🔥 不死身中 (HP1耐え)</div>`;
         crossStatusContainer.innerHTML += `<div class="status-pill pill-heal">💚 オートヒール中</div>`;
       }
@@ -2343,8 +2364,8 @@
             d.curseDebuffTimer = 0;
             d.isVulnerable = false;
             d.stunTimer = 0;
-            d.mesh.position.set(d.originX, 0, d.originZ);
             d.knockbackVel.set(0, 0, 0);
+            d.mesh.position.set(d.originX, 0, d.originZ);
             createExplosion(d.mesh.position, 0x00cec9);
           }
         });
@@ -2352,7 +2373,7 @@
 
       Object.values(remotePlayers).forEach(rp => {
         if (rp.bodyMesh) {
-          rp.group.visible = rp.hasPos && !rp.isInvisible;
+          rp.group.visible = rp.hasPos && !rp.isInvisible && !rp.isDead; // ★死亡時は非表示
         }
       });
 
@@ -2405,6 +2426,7 @@
         if (beamTimer <= 0) {
           beamFiring = false; isExBeamFiring = false;
           myBeam.visible = false; myAvatar.visible = false;
+          camera.position.set(playerPos.x, playerPos.y + eyeHeight, playerPos.z);
           broadcastMsg({ type: 'ult_beam_end' });
           document.getElementById('info').innerText = '戦闘中';
         }
@@ -2552,13 +2574,13 @@
             isGuarding,
             hasFullShield: fullShieldTimer > 0,
             hasSuperMagic: superMagicTimer > 0,
-            hasUndying: autoHealTimer > 0, // 不死身状態を共有
+            hasUndying: autoHealTimer > 0,
             isGrounded,
             curseTimer: curseDebuffTimer,
             isVulnerable,
             stunTimer,
             isInvisible: invisibilityTimer > 0,
-            isDead: false
+            isDead: isDead // ★実際の死亡状態を送信！
           });
           if (beamFiring) {
             const chestPos = new THREE.Vector3(playerPos.x, playerPos.y + 1.2, playerPos.z);
@@ -2586,26 +2608,44 @@
         if (p.life <= 0) { scene.remove(p.mesh); particles.splice(i, 1); }
       }
 
-      // 魔法弾（GC対策一時ベクトル）
+      // 魔法弾
       const spellSphere = new THREE.Sphere(new THREE.Vector3(), 0.35);
       for (let i = spells.length - 1; i >= 0; i--) {
         const s = spells[i];
         s.life -= delta;
 
-        if ((s.isHoming || s.isExSuperHoming) && s.isMine) {
+        if (s.isHoming || s.isExSuperHoming) {
           let closestEnemyPos = null;
           let minD = s.isExSuperHoming ? 45.0 : 24.0;
           _tmpVecA.set(s.vx, s.vy, s.vz).normalize();
 
-          const candidates = (currentStage === 'training') ? dummies.map(d => d.mesh.position) : Object.values(remotePlayers).map(rp => rp.group.position);
-          candidates.forEach(pos => {
-            _tmpVecB.copy(pos).add({ x: 0, y: 0.9, z: 0 }).sub(s.group.position);
-            const d = _tmpVecB.length();
-            const minDot = s.isExSuperHoming ? -0.2 : 0.1;
-            if (d < minD && _tmpVecA.dot(_tmpVecB.normalize()) > minDot) {
-              minD = d; closestEnemyPos = pos;
+          if (s.isMine) {
+            // ★修正：透明、死亡、未同期プレイヤーを除外
+            const candidates = (currentStage === 'training')
+              ? dummies.map(d => d.mesh.position)
+              : Object.values(remotePlayers)
+                  .filter(rp => rp.group.visible && rp.hasPos && !rp.isInvisible && !rp.isDead)
+                  .map(rp => rp.group.position);
+
+            candidates.forEach(pos => {
+              _tmpVecB.copy(pos).add({ x: 0, y: 0.9, z: 0 }).sub(s.group.position);
+              const d = _tmpVecB.length();
+              const minDot = s.isExSuperHoming ? -0.2 : 0.1;
+              if (d < minD && _tmpVecA.dot(_tmpVecB.normalize()) > minDot) {
+                minD = d; closestEnemyPos = pos;
+              }
+            });
+          } else {
+            // 自機が透明化または死亡していない場合のみ追尾
+            if (!isDead && invisibilityTimer <= 0) {
+              _tmpVecB.copy(playerPos).add({ x: 0, y: 0.9, z: 0 }).sub(s.group.position);
+              const d = _tmpVecB.length();
+              const minDot = s.isExSuperHoming ? -0.2 : 0.1;
+              if (d < minD && _tmpVecA.dot(_tmpVecB.normalize()) > minDot) {
+                closestEnemyPos = playerPos;
+              }
             }
-          });
+          }
 
           if (closestEnemyPos) {
             _tmpVecB.copy(closestEnemyPos).add({ x: 0, y: 0.9, z: 0 }).sub(s.group.position).normalize();
@@ -2661,7 +2701,7 @@
 
         if (s.isMine && currentStage !== 'training') {
           Object.values(remotePlayers).forEach(rp => {
-            if (rp.group.visible && rp.hasPos) {
+            if (rp.group.visible && rp.hasPos && !rp.isDead) {
               const eCenter = rp.group.position.clone().add(new THREE.Vector3(0, 0.9, 0));
               if (s.group.position.distanceTo(eCenter) < 1.35 * s.scale) collided = true;
             }
@@ -2680,7 +2720,8 @@
               damage = 0; createExplosion(s.group.position, 0xf1c40f);
             } else {
               broadcastMsg({
-                type: 'hit_confirmed', targetId: s.shooterId,
+                type: 'hit_confirmed',
+                targetShooterId: s.shooterId,
                 isCurseTarget: curseDebuffTimer > 0
               });
 
@@ -2721,7 +2762,6 @@
                 applyDamage(damage, s.shooterId);
                 triggerHitEffect();
               }
-              updateHudBars();
             }
           }
         }
