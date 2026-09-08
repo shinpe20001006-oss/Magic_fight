@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>3D Magic FPS Duel</title>
+  <title>3D Magic FPS Duel - Multiplayer Fixed</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
     body { overflow: hidden; background: #0a0c10; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -820,6 +820,8 @@
     const playerColors = [0xff4757, 0xe056fd, 0xf0932b, 0x6ab04c];
 
     function createRemotePlayer(peerId, name = "魔導士") {
+      if (remotePlayers[peerId]) return remotePlayers[peerId];
+
       const group = new THREE.Group();
       const cIdx = Object.keys(remotePlayers).length % playerColors.length;
       const col = playerColors[cIdx];
@@ -1254,7 +1256,7 @@
       setTimeout(() => { overlay.style.opacity = '0'; }, 160);
     }
 
-    // --- 7. 通信ネットワーク ---
+    // --- 7. 通信ネットワーク（安全サニタイズ＆即時スポーン同期） ---
     let myPeerId = "player";
     let isHost = false;
     let hostPeer = null;
@@ -1262,7 +1264,17 @@
     const hostConnections = {};
     let guestConn = null;
 
-    function initNetwork(roomId) {
+    // 日本語や記号でも安全なPeerIDへハッシュ変換
+    function sanitizeRoomId(str) {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        hash = (hash << 5) - hash + str.charCodeAt(i);
+        hash |= 0;
+      }
+      return 'room_' + Math.abs(hash).toString(36);
+    }
+
+    function initNetwork(rawRoomId) {
       if (currentStage === 'training') {
         myPeerId = "solo_player";
         document.getElementById('info').innerText = '訓練場（ソロ練習モード）';
@@ -1270,15 +1282,17 @@
         return;
       }
 
+      const safeId = sanitizeRoomId(rawRoomId);
+
       if (isHost) {
-        const hostId = `arena4p-v4-${roomId}-host`;
+        const hostId = `arena4p-v4-${safeId}-host`;
         hostPeer = new Peer(hostId);
 
         hostPeer.on('open', (id) => {
           myPeerId = id;
           document.getElementById('info').innerText = 'ホストとして待機中... (最大4人)';
           buildStage(selectedStage);
-          addBattleLog(`部屋作成完了: [${roomId}] ステージ: ${currentStage.toUpperCase()}`);
+          addBattleLog(`部屋作成完了: [${rawRoomId}] ステージ: ${currentStage.toUpperCase()}`);
 
           hostPeer.on('connection', (conn) => {
             if (Object.keys(hostConnections).length >= 3) { conn.close(); return; }
@@ -1293,8 +1307,8 @@
           }
         });
       } else {
-        const hostId = `arena4p-v4-${roomId}-host`;
-        const randomGuestId = `arena4p-v4-${roomId}-g${Math.floor(Math.random() * 8999 + 1000)}`;
+        const hostId = `arena4p-v4-${safeId}-host`;
+        const randomGuestId = `arena4p-v4-${safeId}-g${Math.floor(Math.random() * 8999 + 1000)}`;
         guestPeer = new Peer(randomGuestId);
 
         guestPeer.on('open', (id) => {
@@ -1305,7 +1319,7 @@
         });
 
         guestPeer.on('error', (err) => {
-          alert('ホストが見つかりませんでした。合言葉を確認するか、先に部屋を作ってください。');
+          alert('ホストが見つかりませんでした。合言葉を確認するか、先にホストで部屋を作ってください。');
           leaveGame();
         });
       }
@@ -1314,8 +1328,18 @@
     function setupHostConn(conn) {
       conn.on('open', () => {
         hostConnections[conn.peer] = conn;
-        createRemotePlayer(conn.peer, "魔導士");
-        conn.send({ type: 'init_sync', stage: currentStage, hostName: playerName });
+        // 接続即座にゲスト用のリモートプレイヤーを生成
+        const rp = createRemotePlayer(conn.peer, "魔導士");
+        rp.hasPos = true;
+
+        // ホストの現在の位置・名前・ステージ情報を即時送信して相手画面に即時スポーン
+        conn.send({
+          type: 'init_sync',
+          stage: currentStage,
+          hostName: playerName,
+          hostX: playerPos.x, hostY: playerPos.y, hostZ: playerPos.z,
+          hostRot: yaw
+        });
         broadcastLog(`新たな挑戦者が参戦しました！ (参加人数: ${Object.keys(hostConnections).length + 1}/4)`);
       });
 
@@ -1336,7 +1360,13 @@
     function setupGuestConn(conn, hostId) {
       conn.on('open', () => {
         document.getElementById('info').innerText = '戦闘中';
-        conn.send({ type: 'handshake', name: playerName });
+        // ゲストからも自分の初期位置と名前を即座に送る
+        conn.send({
+          type: 'handshake',
+          name: playerName,
+          x: playerPos.x, y: playerPos.y, z: playerPos.z,
+          rot: yaw
+        });
       });
       conn.on('data', (data) => handleNetData(data, data.senderId || hostId));
       conn.on('close', () => { document.getElementById('info').innerText = 'ホストから切断されました'; });
@@ -1346,16 +1376,29 @@
       if (data.type === 'init_sync') {
         buildStage(data.stage);
         resetSpawn(true);
-        addBattleLog(`ステージ同期: ${data.stage.toUpperCase()}`);
+        // ホストのアバターを即座に生成＆初期位置へ配置
+        const rp = createRemotePlayer(senderId, data.hostName || "ホスト");
+        if (data.hostX !== undefined) {
+          rp.group.position.set(data.hostX, data.hostY, data.hostZ);
+          rp.group.rotation.y = data.hostRot || 0;
+          rp.hasPos = true;
+          rp.group.visible = true;
+        }
+        addBattleLog(`ステージ同期完了: ${data.stage.toUpperCase()}`);
       } else if (data.type === 'handshake') {
-        if (!remotePlayers[senderId]) createRemotePlayer(senderId, data.name);
-        remotePlayers[senderId].name = data.name;
-        remotePlayers[senderId].headTag.userData.name = data.name;
+        const rp = createRemotePlayer(senderId, data.name || "魔導士");
+        rp.name = data.name;
+        rp.headTag.userData.name = data.name;
+        if (data.x !== undefined) {
+          rp.group.position.set(data.x, data.y, data.z);
+          rp.group.rotation.y = data.rot || 0;
+          rp.hasPos = true;
+          rp.group.visible = true;
+        }
       } else if (data.type === 'battle_log') {
         addBattleLog(data.text, data.logType);
       } else if (data.type === 'move') {
-        if (!remotePlayers[senderId]) createRemotePlayer(senderId, data.name || "魔導士");
-        const rp = remotePlayers[senderId];
+        const rp = createRemotePlayer(senderId, data.name || "魔導士");
         rp.group.position.set(data.x, data.y, data.z);
         rp.group.rotation.y = data.rot;
         rp.shield.visible = data.isGuarding;
@@ -1365,9 +1408,9 @@
         rp.isVulnerable = !!data.isVulnerable;
         rp.stunTimer = data.stunTimer || 0;
         rp.isInvisible = !!data.isInvisible;
-        rp.isDead = !!data.isDead; // ★死亡状態を同期
+        rp.isDead = !!data.isDead;
         rp.hasPos = true;
-        rp.group.visible = !rp.isDead && !rp.isInvisible; // ★死亡時は再表示させない
+        rp.group.visible = !rp.isDead && !rp.isInvisible;
 
         const debuffs = [];
         const buffs = [];
@@ -1394,7 +1437,7 @@
         spawnCorpse(new THREE.Vector3(data.x, data.y, data.z), data.rot);
         if (remotePlayers[senderId]) {
           remotePlayers[senderId].group.visible = false;
-          remotePlayers[senderId].isDead = true; // ★死亡フラグを保持
+          remotePlayers[senderId].isDead = true;
         }
         if (data.killerId === myPeerId || data.killerId === 'player') {
           myHp = Math.min(100, myHp + 30);
@@ -1402,7 +1445,6 @@
           addBattleLog(`<span style="color:#2ecc71">★ 敵撃破ボーナス: HP+30 回復！</span>`);
         }
       } else if (data.type === 'ult_curse_hit') {
-        // ★修正：対象外プレイヤーには適用しない
         if (data.targetId !== myPeerId) return;
         if (respawnInvincibleTimer > 0) return;
         superMagicTimer = 0;
@@ -1441,7 +1483,6 @@
           triggerHitEffect();
         }
       } else if (data.type === 'slam_knockback') {
-        // ★修正：発動者自身や死亡者には適用しない
         if (senderId === myPeerId || isDead) return;
         const dist = Math.hypot(playerPos.x - data.x, playerPos.z - data.z);
         if (dist <= 4.5 && respawnInvincibleTimer <= 0) {
@@ -1455,7 +1496,6 @@
           }
         }
       } else if (data.type === 'slam_damage') {
-        // ★修正：対象外プレイヤーには適用しない
         if (data.targetId !== myPeerId) return;
         if (respawnInvincibleTimer <= 0 && myHp > 0 && !isDead) {
           let dmg = 10;
@@ -1767,7 +1807,7 @@
       myAvatar.visible = false;
       myBeam.visible = false;
       chargeBall.visible = false;
-      if (beamFiring) broadcastMsg({ type: 'ult_beam_end' }); // ★ビーム残存バグ防止
+      if (beamFiring) broadcastMsg({ type: 'ult_beam_end' });
       beamCharging = false;
       beamFiring = false;
       camera.position.set(playerPos.x, playerPos.y + eyeHeight, playerPos.z);
@@ -1803,10 +1843,9 @@
 
       const isEx = (ultPercent >= 200.0);
 
-      // ★修正：クイックワープの場合、対象がいるか確認してからゲージを消費する！
       if (selectedUltType === 'warp') {
         const success = executeWarp(isEx);
-        if (!success) return; // 対象がいなければゲージを消費せずに中断
+        if (!success) return;
       }
 
       if (isEx) {
@@ -1900,7 +1939,6 @@
       const camDir = new THREE.Vector3();
       camera.getWorldDirection(camDir);
 
-      // ★修正：透明、死亡、未同期プレイヤーを除外
       const candidates = (currentStage === 'training')
         ? dummies.map(d => ({ group: d.mesh, hasPos: true }))
         : Object.values(remotePlayers).filter(rp => rp.group.visible && rp.hasPos && !rp.isInvisible && !rp.isDead);
@@ -1934,7 +1972,7 @@
 
       if (!targetEnemy) {
         document.getElementById('info').innerText = '遮るもののない視界内に敵がいません！';
-        return false; // ★対象がいない時は false を返してゲージ消費を防ぐ
+        return false;
       }
 
       const enemyRotY = targetEnemy.group.rotation.y;
@@ -1970,7 +2008,7 @@
       }
 
       createExplosion(playerPos, isEx ? 0xff007f : 0x00cec9, isEx);
-      return true; // 成功
+      return true;
     }
 
     function executeHighJumpSlam() {
@@ -2373,7 +2411,7 @@
 
       Object.values(remotePlayers).forEach(rp => {
         if (rp.bodyMesh) {
-          rp.group.visible = rp.hasPos && !rp.isInvisible && !rp.isDead; // ★死亡時は非表示
+          rp.group.visible = rp.hasPos && !rp.isInvisible && !rp.isDead;
         }
       });
 
@@ -2457,6 +2495,40 @@
       if (stunTimer > 0) buffList.push(`<span style="color:#e74c3c">雷硬直</span>`);
       if (isVulnerable) buffList.push(`<span style="color:#e74c3c">弱体化(1.5倍)</span>`);
       document.getElementById('active-buff').innerHTML = buffList.join(' | ');
+
+      // ★重要修正：クリック（ポインターロック）前でも現在位置を相手に常時送信！
+      if (isGameStarted && !isDead) {
+        networkTimer += delta;
+        if (networkTimer >= 0.033) {
+          networkTimer = 0;
+          broadcastMsg({
+            type: 'move',
+            name: playerName,
+            x: playerPos.x, y: playerPos.y, z: playerPos.z,
+            rot: yaw,
+            isGuarding,
+            hasFullShield: fullShieldTimer > 0,
+            hasSuperMagic: superMagicTimer > 0,
+            hasUndying: autoHealTimer > 0,
+            isGrounded,
+            curseTimer: curseDebuffTimer,
+            isVulnerable,
+            stunTimer,
+            isInvisible: invisibilityTimer > 0,
+            isDead: false
+          });
+          if (beamFiring) {
+            const chestPos = new THREE.Vector3(playerPos.x, playerPos.y + 1.2, playerPos.z);
+            const bQuat = myBeam.quaternion;
+            broadcastMsg({
+              type: 'ult_beam_update',
+              x: chestPos.x, y: chestPos.y, z: chestPos.z,
+              qx: bQuat.x, qy: bQuat.y, qz: bQuat.z, qw: bQuat.w,
+              isEx: isExBeamFiring
+            });
+          }
+        }
+      }
 
       // 操作 & 物理
       if (isLocked && !isDead) {
@@ -2563,37 +2635,6 @@
           velocityY = 0;
         }
 
-        networkTimer += delta;
-        if (networkTimer >= 0.033) {
-          networkTimer = 0;
-          broadcastMsg({
-            type: 'move',
-            name: playerName,
-            x: playerPos.x, y: playerPos.y, z: playerPos.z,
-            rot: yaw,
-            isGuarding,
-            hasFullShield: fullShieldTimer > 0,
-            hasSuperMagic: superMagicTimer > 0,
-            hasUndying: autoHealTimer > 0,
-            isGrounded,
-            curseTimer: curseDebuffTimer,
-            isVulnerable,
-            stunTimer,
-            isInvisible: invisibilityTimer > 0,
-            isDead: isDead // ★実際の死亡状態を送信！
-          });
-          if (beamFiring) {
-            const chestPos = new THREE.Vector3(playerPos.x, playerPos.y + 1.2, playerPos.z);
-            const bQuat = myBeam.quaternion;
-            broadcastMsg({
-              type: 'ult_beam_update',
-              x: chestPos.x, y: chestPos.y, z: chestPos.z,
-              qx: bQuat.x, qy: bQuat.y, qz: bQuat.z, qw: bQuat.w,
-              isEx: isExBeamFiring
-            });
-          }
-        }
-
         renderCompass();
         renderMinimap();
       } else {
@@ -2620,7 +2661,6 @@
           _tmpVecA.set(s.vx, s.vy, s.vz).normalize();
 
           if (s.isMine) {
-            // ★修正：透明、死亡、未同期プレイヤーを除外
             const candidates = (currentStage === 'training')
               ? dummies.map(d => d.mesh.position)
               : Object.values(remotePlayers)
@@ -2636,7 +2676,6 @@
               }
             });
           } else {
-            // 自機が透明化または死亡していない場合のみ追尾
             if (!isDead && invisibilityTimer <= 0) {
               _tmpVecB.copy(playerPos).add({ x: 0, y: 0.9, z: 0 }).sub(s.group.position);
               const d = _tmpVecB.length();
@@ -2679,7 +2718,6 @@
           addBattleLog(dummyAttackSwitch ? `反撃マネキン: 攻撃スイッチ【ON】` : `反撃マネキン: 攻撃スイッチ【OFF】`);
         }
 
-        // 訓練場マネキン着弾
         if (currentStage === 'training' && s.isMine) {
           dummies.forEach(d => {
             const dCenter = d.mesh.position.clone().add(new THREE.Vector3(0, 0.9, 0));
@@ -2708,7 +2746,6 @@
           });
         }
 
-        // 被弾判定
         if (!s.isMine && myHp > 0 && !isDead) {
           const myCenter = new THREE.Vector3(playerPos.x, playerPos.y + 0.9, playerPos.z);
           if (s.group.position.distanceTo(myCenter) < 1.35 * s.scale) {
