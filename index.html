@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>3D Magic FPS Duel - Perfect Multiplayer Edition</title>
+  <title>3D Magic FPS Duel - Complete Multiplayer Fixed</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
     body { overflow: hidden; background: #0a0c10; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -101,11 +101,11 @@
     /* バトルログ */
     #battle-log {
       position: absolute; bottom: 20px; right: 20px;
-      width: 400px; display: flex; flex-direction: column; gap: 6px;
+      width: 420px; display: flex; flex-direction: column; gap: 6px;
       pointer-events: none; z-index: 10;
     }
     .log-item {
-      background: rgba(12, 18, 28, 0.85);
+      background: rgba(12, 18, 28, 0.88);
       border-left: 4px solid #00cec9;
       color: #fff; padding: 7px 12px; border-radius: 4px;
       font-size: 13px; font-weight: bold; line-height: 1.4;
@@ -116,6 +116,7 @@
     }
     .log-item.kill { border-color: #ff4757; }
     .log-item.ult { border-color: #f1c40f; }
+    .log-item.net { border-color: #0984e3; background: rgba(9, 132, 227, 0.25); }
     .log-item.ex {
       border-left: 5px solid #ff007f;
       background: linear-gradient(90deg, rgba(255, 0, 128, 0.3), rgba(12, 18, 28, 0.9));
@@ -325,7 +326,7 @@
 
     <div id="step-1" class="step-container">
       <div class="room-box">
-        <label>合言葉（半角英数推奨）</label>
+        <label>合言葉（半角英数字推奨）</label>
         <input type="text" id="room-input" value="arena888" maxlength="15">
         <div class="mode-btn-group">
           <button class="mode-btn host" id="btn-goto-host">🏠 合言葉で部屋を作る (ホスト)</button>
@@ -1254,7 +1255,7 @@
       setTimeout(() => { overlay.style.opacity = '0'; }, 160);
     }
 
-    // --- 7. 通信ネットワーク（STUNサーバー完備＆確実な接続ハンドシェイク） ---
+    // --- 7. 通信ネットワーク（STUNサーバー・確実な同期・デバッグログ完備） ---
     let myPeerId = "player";
     let isHost = false;
     let hostPeer = null;
@@ -1262,7 +1263,6 @@
     const hostConnections = {};
     let guestConn = null;
 
-    // ★Google STUNサーバー設定（異なる回線・NAT環境でも一瞬で接続確立）
     const PEER_CONFIG = {
       config: {
         iceServers: [
@@ -1273,12 +1273,15 @@
       }
     };
 
+    // ルームIDの半角英数字サニタイズ（全角や記号によるPeerJSエラーを完全防止）
     function sanitizeRoomId(str) {
-      return encodeURIComponent(str.trim().toLowerCase()).replace(/%/g, 'x');
+      const sanitized = str.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      return sanitized || "arena888";
     }
 
+    // 自機の現在位置・状態を即時送信
     function sendMyCurrentMove() {
-      if (isDead) return;
+      if (!isGameStarted) return;
       broadcastMsg({
         type: 'move',
         name: playerName,
@@ -1293,12 +1296,13 @@
         isVulnerable,
         stunTimer,
         isInvisible: invisibilityTimer > 0,
-        isDead: false
+        isDead: isDead
       });
     }
 
     function initNetwork(roomId) {
-      const cleanRoom = sanitizeRoomId(roomId) || "arena888";
+      const cleanRoom = sanitizeRoomId(roomId);
+      console.log(`[通信] ルームID初期化: ${cleanRoom} (モード: ${isHost ? 'ホスト' : '参加'})`);
 
       if (currentStage === 'training') {
         myPeerId = "solo_player";
@@ -1308,40 +1312,45 @@
       }
 
       if (isHost) {
-        const hostId = `arena4p-v5-${cleanRoom}-host`;
+        const hostId = `arena4p-v6-${cleanRoom}-host`;
         hostPeer = new Peer(hostId, PEER_CONFIG);
 
         hostPeer.on('open', (id) => {
           myPeerId = id;
-          document.getElementById('info').innerText = 'ホスト待機中 (合言葉を友達に共有)';
+          document.getElementById('info').innerText = `ホスト待機中 [部屋:${cleanRoom}]`;
           buildStage(selectedStage);
-          addBattleLog(`部屋作成完了: [${roomId}] ステージ: ${currentStage.toUpperCase()}`);
+          addBattleLog(`[通信] 部屋作成完了: [${cleanRoom}] ステージ: ${currentStage.toUpperCase()}`, 'net');
+          console.log(`[通信] ホストPeerオープン: ${id}`);
 
           hostPeer.on('connection', (conn) => {
+            console.log(`[通信] ゲストから接続要求を受信: ${conn.peer}`);
             if (Object.keys(hostConnections).length >= 3) { conn.close(); return; }
             setupHostConn(conn);
           });
         });
 
         hostPeer.on('error', (err) => {
+          console.error(`[通信] ホストPeerエラー:`, err);
           if (err.type === 'unavailable-id') {
             alert('この合言葉の部屋は既にホストが存在します。「部屋に入る」を選択するか別の合言葉を使ってください。');
             leaveGame();
           }
         });
       } else {
-        const hostId = `arena4p-v5-${cleanRoom}-host`;
-        const randomGuestId = `arena4p-v5-${cleanRoom}-g${Math.floor(Math.random() * 89999 + 10000)}`;
+        const hostId = `arena4p-v6-${cleanRoom}-host`;
+        const randomGuestId = `arena4p-v6-${cleanRoom}-g${Math.floor(Math.random() * 89999 + 10000)}`;
         guestPeer = new Peer(randomGuestId, PEER_CONFIG);
 
         guestPeer.on('open', (id) => {
           myPeerId = id;
           document.getElementById('info').innerText = 'ホストへ接続中...';
+          console.log(`[通信] ゲストPeerオープン: ${id} -> ホスト(${hostId})へ接続開始`);
           guestConn = guestPeer.connect(hostId, { reliable: true });
           setupGuestConn(guestConn, hostId);
         });
 
         guestPeer.on('error', (err) => {
+          console.error(`[通信] ゲストPeerエラー:`, err);
           alert('ホストが見つかりませんでした。ホストが部屋を作った後に合言葉を正しく入力して入室してください。');
           leaveGame();
         });
@@ -1349,18 +1358,43 @@
     }
 
     function setupHostConn(conn) {
-      conn.on('open', () => {
+      // 初期同期パケット送信用ヘルパー
+      const sendStageAndHostData = () => {
+        console.log(`[通信] ゲスト(${conn.peer})へステージ [${currentStage}] とホスト初期状態を送信`);
+        conn.send({
+          type: 'init_sync',
+          stage: currentStage,
+          hostName: playerName,
+          hostId: myPeerId,
+          x: playerPos.x, y: playerPos.y, z: playerPos.z,
+          rot: yaw,
+          isDead: isDead
+        });
+      };
+
+      const onConnectionReady = () => {
         hostConnections[conn.peer] = conn;
-        // ホスト側で即座にゲストのアバターを作成
         createRemotePlayer(conn.peer, "魔導士");
-        // ゲストへ初期設定とホストの情報を即座に送信
-        conn.send({ type: 'init_sync', stage: currentStage, hostName: playerName, hostId: myPeerId });
+        sendStageAndHostData();
         sendMyCurrentMove();
-        broadcastLog(`新たな挑戦者が参戦しました！ (参加人数: ${Object.keys(hostConnections).length + 1}/4)`);
-      });
+        broadcastLog(`[通信] 新たなプレイヤーが参戦しました！ (人数: ${Object.keys(hostConnections).length + 1}/4)`, 'net');
+      };
+
+      if (conn.open) {
+        onConnectionReady();
+      } else {
+        conn.on('open', onConnectionReady);
+      }
 
       conn.on('data', (data) => {
+        // ★ハンドシェイク受信時にも確実に init_sync を再送（同期漏れを100%防止）
+        if (data.type === 'handshake') {
+          console.log(`[通信] ゲスト(${conn.peer})からハンドシェイク受信: ${data.name}`);
+          sendStageAndHostData();
+        }
+
         handleNetData(data, conn.peer);
+
         // 他のゲストにも中継
         Object.entries(hostConnections).forEach(([pid, c]) => {
           if (pid !== conn.peer && c.open) c.send({ ...data, senderId: conn.peer });
@@ -1368,34 +1402,57 @@
       });
 
       conn.on('close', () => {
+        console.log(`[通信] ゲスト切断: ${conn.peer}`);
         removeRemotePlayer(conn.peer);
         delete hostConnections[conn.peer];
-        broadcastLog(`プレイヤーが切断しました`);
+        broadcastLog(`[通信] プレイヤーが切断しました`, 'net');
       });
     }
 
     function setupGuestConn(conn, hostId) {
-      conn.on('open', () => {
+      const onGuestOpen = () => {
+        console.log(`[通信] ホストとのコネクション確立成功！ハンドシェイク送信`);
         document.getElementById('info').innerText = '戦闘中';
-        // ゲスト側から即座にハンドシェイクを送信
         conn.send({ type: 'handshake', name: playerName });
         sendMyCurrentMove();
-        addBattleLog(`<span style="color:#2ecc71">ホストとの接続が完了しました！</span>`);
-      });
+        addBattleLog(`[通信] ホストとの接続が確立しました！ステージ同期待機中...`, 'net');
+      };
+
+      if (conn.open) {
+        onGuestOpen();
+      } else {
+        conn.on('open', onGuestOpen);
+      }
+
       conn.on('data', (data) => handleNetData(data, data.senderId || hostId));
-      conn.on('close', () => { document.getElementById('info').innerText = 'ホストから切断されました'; });
+      conn.on('close', () => {
+        console.log(`[通信] ホストから切断されました`);
+        document.getElementById('info').innerText = 'ホストから切断されました';
+      });
     }
 
     function handleNetData(data, senderId) {
       if (data.type === 'init_sync') {
+        console.log(`[通信] ホストからステージ同期受信: [${data.stage}] ホスト名: ${data.hostName}`);
         buildStage(data.stage);
         resetSpawn(true);
-        // ホスト用アバターを即座に作成
+
+        // ホスト用アバターを即座に作成・位置初期化
         if (!remotePlayers[data.hostId]) {
           createRemotePlayer(data.hostId, data.hostName || "ホスト");
         }
+        if (data.x !== undefined) {
+          const rp = remotePlayers[data.hostId];
+          rp.group.position.set(data.x, data.y, data.z);
+          rp.group.rotation.y = data.rot || 0;
+          rp.hasPos = true;
+          rp.isDead = !!data.isDead;
+          rp.group.visible = !rp.isDead;
+        }
+
+        // ゲストの現在位置をホストへ即座に送信
         sendMyCurrentMove();
-        addBattleLog(`ステージ同期: ${data.stage.toUpperCase()}`);
+        addBattleLog(`[通信] ステージ [${data.stage.toUpperCase()}] をホストと同期完了！`, 'net');
       } else if (data.type === 'handshake') {
         if (!remotePlayers[senderId]) createRemotePlayer(senderId, data.name);
         remotePlayers[senderId].name = data.name;
@@ -1417,7 +1474,7 @@
         rp.isInvisible = !!data.isInvisible;
         rp.isDead = !!data.isDead;
         rp.hasPos = true;
-        rp.group.visible = !rp.isDead && !rp.isInvisible; // ★生存中かつ非透明なら確実に表示！
+        rp.group.visible = !rp.isDead && !rp.isInvisible;
 
         const debuffs = [];
         const buffs = [];
@@ -1644,7 +1701,8 @@
     document.getElementById('btn-goto-host').addEventListener('click', () => {
       gameModeChoice = 'host';
       isHost = true;
-      document.getElementById('mode-badge').innerText = `モード: 部屋を作成（ホスト） [ルーム: ${document.getElementById('room-input').value}]`;
+      const clean = sanitizeRoomId(document.getElementById('room-input').value);
+      document.getElementById('mode-badge').innerText = `モード: 部屋を作成（ホスト） [合言葉: ${clean}]`;
       document.getElementById('stage-selection-area').style.display = 'block';
       document.getElementById('step-1').style.display = 'none';
       document.getElementById('step-2').style.display = 'flex';
@@ -1653,7 +1711,8 @@
     document.getElementById('btn-goto-join').addEventListener('click', () => {
       gameModeChoice = 'join';
       isHost = false;
-      document.getElementById('mode-badge').innerText = `モード: 部屋に参加 [ルーム: ${document.getElementById('room-input').value}]`;
+      const clean = sanitizeRoomId(document.getElementById('room-input').value);
+      document.getElementById('mode-badge').innerText = `モード: 部屋に参加 [合言葉: ${clean}]`;
       document.getElementById('stage-selection-area').style.display = 'none';
       document.getElementById('step-1').style.display = 'none';
       document.getElementById('step-2').style.display = 'flex';
@@ -2260,7 +2319,7 @@
       }
     }
 
-    // --- 11. メインループ ---
+    // --- 11. メインループ（位置同期＆物理演算はPointer Lockから完全独立） ---
     const clock = new THREE.Clock();
     let networkTimer = 0;
 
@@ -2503,8 +2562,40 @@
       if (isVulnerable) buffList.push(`<span style="color:#e74c3c">弱体化(1.5倍)</span>`);
       document.getElementById('active-buff').innerHTML = buffList.join(' | ');
 
-      // ★位置同期の完全独立送信（ポインターロックの有無に関係なく毎秒30回確実に送信！）
+      // ★重力＆着地物理演算（ポインターロックに関係なく常に正常計算）
       if (isGameStarted && !isDead) {
+        const prevY = playerPos.y;
+        velocityY += gravity * delta;
+        playerPos.y += velocityY * delta;
+
+        const floorY = checkGround(prevY, playerPos.y);
+        if (playerPos.y <= floorY) {
+          playerPos.y = floorY;
+          if (isSlamming) handleSlamImpact();
+          velocityY = 0;
+          isGrounded = true;
+          canSlam = false;
+        } else {
+          isGrounded = false;
+        }
+
+        if (playerPos.y < -15.0) {
+          const s = safeSpawns[0] || { x: 0, z: 0 };
+          playerPos.set(s.x, 2.5, s.z);
+          velocityY = 0;
+        }
+
+        // ノックバック物理
+        if (playerKnockbackVel.lengthSq() > 0.01) {
+          const kx = playerPos.x + playerKnockbackVel.x * delta;
+          const kz = playerPos.z + playerKnockbackVel.z * delta;
+          const resolvedK = resolveCollision(kx, kz);
+          playerPos.x = resolvedK.x;
+          playerPos.z = resolvedK.z;
+          playerKnockbackVel.multiplyScalar(Math.max(0, 1.0 - delta * 5.5));
+        }
+
+        // ★位置同期の完全独立送信（ポインターロックの有無に関係なく毎秒30回確実に送信！）
         networkTimer += delta;
         if (networkTimer >= 0.033) {
           networkTimer = 0;
@@ -2522,7 +2613,7 @@
         }
       }
 
-      // 操作 & 物理
+      // 操作入力（WASD・視点移動・ジャンプ・防御）
       if (isLocked && !isDead) {
         const isLeftHolding = (mouseButtonsState & 1) && (Date.now() - leftDownTime >= 170);
         const isRightActive = (mouseButtonsState & 2) !== 0;
@@ -2588,15 +2679,6 @@
           playerPos.z = resolved.z;
         }
 
-        if (playerKnockbackVel.lengthSq() > 0.01) {
-          const kx = playerPos.x + playerKnockbackVel.x * delta;
-          const kz = playerPos.z + playerKnockbackVel.z * delta;
-          const resolvedK = resolveCollision(kx, kz);
-          playerPos.x = resolvedK.x;
-          playerPos.z = resolvedK.z;
-          playerKnockbackVel.multiplyScalar(Math.max(0, 1.0 - delta * 5.5));
-        }
-
         const isJumpHeld = !!(keys['Space'] || keys['ShiftLeft'] || keys['ShiftRight']);
         if (isJumpHeld && isGrounded && stunTimer <= 0) {
           let jPower = 10;
@@ -2604,27 +2686,6 @@
           if (beamFiring) jPower = 5;
           velocityY = jPower;
           isGrounded = false;
-        }
-
-        const prevY = playerPos.y;
-        velocityY += gravity * delta;
-        playerPos.y += velocityY * delta;
-
-        const floorY = checkGround(prevY, playerPos.y);
-        if (playerPos.y <= floorY) {
-          playerPos.y = floorY;
-          if (isSlamming) handleSlamImpact();
-          velocityY = 0;
-          isGrounded = true;
-          canSlam = false;
-        } else {
-          isGrounded = false;
-        }
-
-        if (playerPos.y < -15.0) {
-          const s = safeSpawns[0] || { x: 0, z: 0 };
-          playerPos.set(s.x, 2.5, s.z);
-          velocityY = 0;
         }
 
         renderCompass();
